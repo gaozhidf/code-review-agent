@@ -26,14 +26,13 @@ code-review-agent/
 ├── examples/
 │   └── azure-pipeline.yml
 ├── mkdocs.yml             # MkDocs configuration
-├── mkdocs/
-│   └── docs/              # Documentation source
-│       ├── index.md
-│       ├── getting-started.md
-│       ├── configuration.md
-│       ├── usage.md
-│       ├── team-standards.md
-│       └── development.md
+├── docs/              # Documentation source
+│   ├── index.md
+│   ├── getting-started.md
+│   ├── configuration.md
+│   ├── usage.md
+│   ├── team-standards.md
+│   └── development.md
 ├── src/
 │   └── code_review_agent/
 │       ├── __init__.py

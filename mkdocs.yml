@@ -1,6 +1,6 @@
 site_name: code-review-agent
 site_description: AI-powered code review agent integrated with Azure DevOps
-site_author: Your Name
+site_author: gaozhidf
 
 theme:
   name: material
@@ -26,12 +26,17 @@ theme:
         icon: material/brightness-4
         name: Switch to light mode
 
-repo_url: https://github.com/your-username/code-review-agent
+repo_url: https://github.com/gaozhidf/code-review-agent
 edit_uri: edit/main/docs/
+
+plugins:
+  - search
+  - mermaid2
 
 nav:
   - Home: index.md
   - Getting Started: getting-started.md
+  - Architecture: architecture.md
   - Configuration: configuration.md
   - Usage: usage.md
   - Team Standards: team-standards.md

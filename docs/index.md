@@ -39,7 +39,7 @@ Automate code quality inspection for backend and frontend pull requests, with co
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/code-review-agent.git
+git clone https://github.com/gaozhidf/code-review-agent.git
 cd code-review-agent
 
 # Install dependencies with uv

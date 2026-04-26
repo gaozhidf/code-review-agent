@@ -64,7 +64,7 @@ steps:
    - `AZURE_DEVOPS_PAT` - personal access token
    - `OPENAI_API_KEY` - your OpenAI API key
 
-A full example is available at [`examples/azure-pipeline.yml`](https://github.com/your-username/code-review-agent/blob/main/examples/azure-pipeline.yml).
+A full example is available at [`examples/azure-pipeline.yml`](https://github.com/gaozhidf/code-review-agent/blob/main/examples/azure-pipeline.yml).
 
 ## Python API
 

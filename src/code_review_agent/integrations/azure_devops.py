@@ -49,15 +49,29 @@ class AzureDevOpsClient:
         
         code_changes = []
         for change in changes.change_entries:
-            if change.item:
+            # In azure-devops 7.1.0b4, item is in additional_properties
+            item = None
+            if hasattr(change, 'item') and change.item:
+                item = change.item
+            elif 'item' in change.additional_properties:
+                item = change.additional_properties['item']
+            
+            if item:
+                # Get change_type
+                change_type = None
+                if hasattr(change, 'change_type'):
+                    change_type = change.change_type
+                elif 'changeType' in change.additional_properties:
+                    change_type = change.additional_properties['changeType']
+                
                 # Get the diff content
-                diff = self._get_diff(project, repository_id, pull_request_id, change)
+                diff = self._get_diff(project, repository_id, pull_request_id, change, item)
                 code_changes.append(CodeChange(
-                    file_path=change.item.path,
+                    file_path=item['path'] if isinstance(item, dict) else item.path,
                     diff=diff,
-                    language=self._detect_language(change.item.path),
-                    is_new=change.change_type == "add",
-                    is_deleted=change.change_type == "delete"
+                    language=self._detect_language(item['path'] if isinstance(item, dict) else item.path),
+                    is_new=change_type == "add",
+                    is_deleted=change_type == "delete"
                 ))
         
         self._change_map = {change.file_path: change for change in code_changes}
@@ -120,7 +134,8 @@ class AzureDevOpsClient:
         project: str,
         repository_id: str,
         pull_request_id: int,
-        change
+        change,
+        item
     ) -> str:
         """Get diff content for a specific change."""
         if hasattr(change, 'diff') and change.diff:
@@ -128,11 +143,12 @@ class AzureDevOpsClient:
         
         # Fetch diff content if not provided
         try:
+            object_id = item['objectId'] if isinstance(item, dict) else item.object_id
             diff_content = self.git_client.get_pull_request_file_diff(
                 project=project,
                 repository_id=repository_id,
                 pull_request_id=pull_request_id,
-                file_id=change.item.object_id
+                file_id=object_id
             )
             if diff_content and hasattr(diff_content, 'diff'):
                 return diff_content.diff
@@ -169,12 +185,21 @@ class AzureDevOpsClient:
             }
         }
         
-        self.git_client.create_pull_request_thread(
-            project=project,
-            repository_id=repository_id,
-            pull_request_id=pull_request_id,
-            git_pull_request_comment_thread=thread
-        )
+        # In azure-devops 7.1.0b4, method name is create_thread
+        if hasattr(self.git_client, 'create_pull_request_thread'):
+            self.git_client.create_pull_request_thread(
+                project=project,
+                repository_id=repository_id,
+                pull_request_id=pull_request_id,
+                git_pull_request_comment_thread=thread
+            )
+        elif hasattr(self.git_client, 'create_thread'):
+            self.git_client.create_thread(
+                project=project,
+                repository_id=repository_id,
+                pull_request_id=pull_request_id,
+                comment_thread=thread
+            )
     
     def _post_summary_comment(
         self,
@@ -190,12 +215,21 @@ class AzureDevOpsClient:
         thread.comments = [Comment(content=summary_text)]
         # No context = top-level comment
         
-        self.git_client.create_pull_request_thread(
-            project=project,
-            repository_id=repository_id,
-            pull_request_id=pull_request_id,
-            git_pull_request_comment_thread=thread
-        )
+        # In azure-devops 7.1.0b4, method name is create_thread
+        if hasattr(self.git_client, 'create_pull_request_thread'):
+            self.git_client.create_pull_request_thread(
+                project=project,
+                repository_id=repository_id,
+                pull_request_id=pull_request_id,
+                git_pull_request_comment_thread=thread
+            )
+        elif hasattr(self.git_client, 'create_thread'):
+            self.git_client.create_thread(
+                project=project,
+                repository_id=repository_id,
+                pull_request_id=pull_request_id,
+                comment_thread=thread
+            )
     
     def _format_finding_comment(self, finding: ReviewFinding) -> str:
         """Format a finding for Azure DevOps comment."""
