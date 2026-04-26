@@ -1,0 +1,8 @@
+{
+  "project_id": "your-project-id",
+  "learned_patterns": [],
+  "severity_overrides": {
+    "hardcoded_secrets": "critical",
+    "missing_error_handling": "major"
+  }
+}

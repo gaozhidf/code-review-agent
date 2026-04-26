@@ -1,0 +1,41 @@
+# Azure DevOps Pipeline to automatically run code-review-agent on PR
+
+trigger:
+  - main
+  - master
+
+pr:
+  - main
+  - master
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+- task: UsePythonVersion@0
+  inputs:
+    versionSpec: '3.11'
+    addToPath: true
+
+- script: |
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    source $HOME/.cargo/env
+    uv sync
+  displayName: 'Install uv and dependencies'
+
+- script: |
+    source $HOME/.cargo/env
+    python -m code_review_agent \
+      --project $(AZURE_PROJECT) \
+      --repository $(AZURE_REPOSITORY_ID) \
+      --pr-id $(System.PullRequest.PullRequestId)
+  env:
+    AZURE_DEVOPS_ORG_URL: $(AZURE_DEVOPS_ORG_URL)
+    AZURE_DEVOPS_PAT: $(AZURE_DEVOPS_PAT)
+    OPENAI_API_KEY: $(OPENAI_API_KEY)
+    # ANTHROPIC_API_KEY: $(ANTHROPIC_API_KEY)
+    # GEMINI_API_KEY: $(GEMINI_API_KEY)
+    DEFAULT_LLM_MODEL: $(DEFAULT_LLM_MODEL)
+    TEAM_STANDARDS_PATH: ./config/team-standards.json
+  displayName: 'Run AI Code Review'
+  continueOnError: true  # Don't fail the build if the review finds issues
