@@ -1,41 +1,39 @@
-# Azure DevOps Pipeline to automatically run code-review-agent on PR
-
-trigger:
-  - main
-  - master
-
-pr:
-  - main
-  - master
+trigger: none
 
 pool:
-  vmImage: 'ubuntu-latest'
+  vmImage: "ubuntu-latest"
 
-steps:
-- task: UsePythonVersion@0
-  inputs:
-    versionSpec: '3.11'
-    addToPath: true
+stages:
+  - stage: pr_review
+    displayName: PR Review Agent
+    jobs:
+      - job: review
+        displayName: Run PR review agent
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "3.13"
 
-- script: |
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    source $HOME/.cargo/env
-    uv sync
-  displayName: 'Install uv and dependencies'
+          - script: |
+              curl -LsSf https://astral.sh/uv/install.sh | sh
+              source $HOME/.cargo/env
+              uv pip install --system git+https://github.com/gaozhidf/code-review-agent.git
+            displayName: 'Install uv and dependencies'
 
-- script: |
-    source $HOME/.cargo/env
-    python -m code_review_agent \
-      --project $(AZURE_PROJECT) \
-      --repository $(AZURE_REPOSITORY_ID) \
-      --pr-id $(System.PullRequest.PullRequestId)
-  env:
-    AZURE_DEVOPS_ORG_URL: $(AZURE_DEVOPS_ORG_URL)
-    AZURE_DEVOPS_PAT: $(AZURE_DEVOPS_PAT)
-    OPENAI_API_KEY: $(OPENAI_API_KEY)
-    # ANTHROPIC_API_KEY: $(ANTHROPIC_API_KEY)
-    # GEMINI_API_KEY: $(GEMINI_API_KEY)
-    DEFAULT_LLM_MODEL: $(DEFAULT_LLM_MODEL)
-    TEAM_STANDARDS_PATH: ./config/team-standards.json
-  displayName: 'Run AI Code Review'
-  continueOnError: true  # Don't fail the build if the review finds issues
+          - script: |
+              source $HOME/.cargo/env
+              python -m code_review_agent \
+                --project $(System.TeamProject) \
+                --repository $(Build.Repository.ID) \
+                --pr-id $(System.PullRequest.PullRequestId)
+            displayName: Execute review agent
+            env:
+              AZURE_DEVOPS_ORG_URL: $(AZURE_DEVOPS_ORG_URL)
+              AZURE_DEVOPS_PAT: $(AZURE_DEVOPS_PAT)
+              OPENAI_BASE_URL: $(OPENAI_BASE_URL)
+              OPENAI_API_KEY: $(OPENAI_API_KEY)
+              ANTHROPIC_API_KEY: $(ANTHROPIC_API_KEY)
+              GEMINI_API_KEY: $(GEMINI_API_KEY)
+              DEFAULT_LLM_MODEL: $(DEFAULT_LLM_MODEL)
+              TEAM_STANDARDS_PATH: ./config/team-standards.json
+            continueOnError: true  # Don't fail the build if the review finds issues
