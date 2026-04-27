@@ -1,7 +1,7 @@
 import os
 from typing import List, Dict, Optional
 from azure.devops.connection import Connection
-from azure.devops.v7_1.git.models import GitPullRequestCommentThread, Comment, GitVersionDescriptor
+from azure.devops.v7_1.git.models import GitPullRequestCommentThread, Comment, GitVersionDescriptor, CommentThreadContext, CommentPosition
 from azure.devops.v7_1.git.git_client import GitClient
 from msrest.authentication import BasicAuthentication
 from loguru import logger
@@ -338,26 +338,29 @@ class AzureDevOpsClient:
         finding: ReviewFinding
     ) -> None:
         """Post a single inline comment thread."""
+        # Azure DevOps requires line >= 1, skip if no line info
+        if not finding.line_start or finding.line_start < 1:
+            logger.warning(f"Skipping inline comment '{finding.title}' - no valid line number")
+            return
+
         comment_text = self._format_finding_comment(finding)
-        
+
         thread = GitPullRequestCommentThread()
         thread.comments = [Comment(content=comment_text)]
-        
+
         # Map diff line to PR comment coordinates
-        # Azure uses 1-based line numbers on the right side (new version)
-        line_end = finding.line_end or finding.line_start
-        
-        thread.thread_context = {
-            "rightFileStart": {
-                "line": finding.line_start,
-                "offset": 1
-            },
-            "rightFileEnd": {
-                "line": line_end,
-                "offset": 1
-            }
-        }
-        
+        # Azure uses 1-based line numbers, offset starts at 1
+        line_start = finding.line_start
+        line_end = finding.line_end if finding.line_end and finding.line_end >= 1 else line_start
+
+        if not finding.file_path:
+            raise ValueError("file_path is required for inline comment")
+        thread.thread_context = CommentThreadContext(
+            file_path=finding.file_path,
+            right_file_start=CommentPosition(line=line_start, offset=1),
+            right_file_end=CommentPosition(line=line_end, offset=1)
+        )
+
         # In azure-devops 7.1.0b4, method name is create_thread
         if hasattr(self.git_client, 'create_pull_request_thread'):
             self.git_client.create_pull_request_thread(

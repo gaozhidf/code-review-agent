@@ -24,6 +24,7 @@ class ReviewFinding(BaseModel):
     description: str
     severity: Severity
     category: str
+    file_path: Optional[str] = None
     line_start: Optional[int] = None
     line_end: Optional[int] = None
     suggestion: Optional[str] = None
