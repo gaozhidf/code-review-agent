@@ -1,9 +1,10 @@
 import os
 from typing import List, Dict, Optional
 from azure.devops.connection import Connection
-from azure.devops.v7_1.git.models import GitPullRequestCommentThread, Comment
+from azure.devops.v7_1.git.models import GitPullRequestCommentThread, Comment, GitVersionDescriptor
 from azure.devops.v7_1.git.git_client import GitClient
 from msrest.authentication import BasicAuthentication
+from loguru import logger
 from code_review_agent.models import CodeChange, CodeReviewResult, ReviewFinding, Severity
 
 
@@ -11,6 +12,8 @@ class AzureDevOpsClient:
     """Azure DevOps integration for posting code review comments."""
     
     def __init__(self):
+        logger.info("Initializing Azure DevOps client...")
+        
         org_url = os.getenv("AZURE_DEVOPS_ORG_URL")
         pat = os.getenv("AZURE_DEVOPS_PAT") or os.getenv("AZURE_DEVOOS_PAT")  # fallback for typo
         
@@ -20,6 +23,8 @@ class AzureDevOpsClient:
         credentials = BasicAuthentication("", pat)
         self.connection = Connection(org_url, credentials)
         self.git_client: GitClient = self.connection.clients.get_git_client()
+        
+        logger.success("Azure DevOps client initialized successfully")
     
     def get_pull_request_changes(
         self,
@@ -28,52 +33,88 @@ class AzureDevOpsClient:
         pull_request_id: int
     ) -> List[CodeChange]:
         """Fetch all changes from a pull request."""
+        logger.info(f"Fetching pull request #{pull_request_id} changes...")
+        
         pr = self.git_client.get_pull_request(
             project=project,
             repository_id=repository_id,
             pull_request_id=pull_request_id
         )
+        logger.debug(f"PR title: {pr.title}")
         
+        logger.info("Fetching pull request iterations...")
         iterations = self.git_client.get_pull_request_iterations(
             repository_id=repository_id,
             pull_request_id=pull_request_id,
             project=project
         )
-        latest_iter = iterations[-1].id
-        changes = self.git_client.get_pull_request_iteration_changes(
-            project=project,
-            repository_id=repository_id,
-            pull_request_id=pull_request_id,
-            iteration_id=latest_iter,
-        )
+        logger.info(f"Found {len(iterations)} iterations")
         
         code_changes = []
-        for change in changes.change_entries:
-            # In azure-devops 7.1.0b4, item is in additional_properties
-            item = None
-            if hasattr(change, 'item') and change.item:
-                item = change.item
-            elif 'item' in change.additional_properties:
-                item = change.additional_properties['item']
-            
-            if item:
-                # Get change_type
-                change_type = None
-                if hasattr(change, 'change_type'):
-                    change_type = change.change_type
-                elif 'changeType' in change.additional_properties:
-                    change_type = change.additional_properties['changeType']
-                
-                # Get the diff content
-                diff = self._get_diff(project, repository_id, pull_request_id, change, item)
-                code_changes.append(CodeChange(
-                    file_path=item['path'] if isinstance(item, dict) else item.path,
-                    diff=diff,
-                    language=self._detect_language(item['path'] if isinstance(item, dict) else item.path),
-                    is_new=change_type == "add",
-                    is_deleted=change_type == "delete"
-                ))
+        seen_files = set()  # Track files to avoid duplicates
         
+        for iteration in iterations:
+            iter_id = iteration.id
+            logger.debug(f"Processing iteration {iter_id}/{len(iterations)}")
+            
+            # Get commit IDs for this iteration
+            source_commit_id = None
+            target_commit_id = None
+            
+            if hasattr(iteration, 'source_ref_commit') and iteration.source_ref_commit:
+                source_commit_id = iteration.source_ref_commit.commit_id
+            if hasattr(iteration, 'target_ref_commit') and iteration.target_ref_commit:
+                target_commit_id = iteration.target_ref_commit.commit_id
+            
+            # Get changes for this iteration
+            logger.debug(f"Fetching changes for iteration {iter_id}...")
+            changes = self.git_client.get_pull_request_iteration_changes(
+                project=project,
+                repository_id=repository_id,
+                pull_request_id=pull_request_id,
+                iteration_id=iter_id,
+            )
+            logger.debug(f"Found {len(changes.change_entries)} changes in iteration {iter_id}")
+            
+            for change in changes.change_entries:
+                # In azure-devops 7.1.0b4, item is in additional_properties
+                item = None
+                if hasattr(change, 'item') and change.item:
+                    item = change.item
+                elif 'item' in change.additional_properties:
+                    item = change.additional_properties['item']
+                
+                if item:
+                    # Get file path
+                    file_path = item['path'] if isinstance(item, dict) else item.path
+                    
+                    # Skip if already processed
+                    if file_path in seen_files:
+                        continue
+                    seen_files.add(file_path)
+                    
+                    # Get change_type
+                    change_type = None
+                    if hasattr(change, 'change_type'):
+                        change_type = change.change_type
+                    elif 'changeType' in change.additional_properties:
+                        change_type = change.additional_properties['changeType']
+                    
+                    logger.debug(f"Getting diff for file: {file_path} (change_type: {change_type})")
+                    
+                    # Get the diff content using iteration-specific commit IDs
+                    diff = self._get_diff(
+                        project, repository_id, source_commit_id, target_commit_id, change, item
+                    )
+                    code_changes.append(CodeChange(
+                        file_path=file_path,
+                        diff=diff,
+                        language=self._detect_language(file_path),
+                        is_new=change_type == "add",
+                        is_deleted=change_type == "delete"
+                    ))
+        
+        logger.success(f"Completed fetching {len(code_changes)} file changes")
         self._change_map = {change.file_path: change for change in code_changes}
         return code_changes
     
@@ -85,9 +126,14 @@ class AzureDevOpsClient:
         result: CodeReviewResult
     ) -> None:
         """Post inline review comments and summary to Azure DevOps PR."""
-        # Post inline comments when we have valid line info
-        for finding in result.findings:
+        logger.info(f"Posting review comments to PR #{pull_request_id}...")
+        logger.info(f"Total findings: {result.summary.total_findings}")
+        
+        inline_count = 0
+        for i, finding in enumerate(result.findings):
             if finding.line_start:
+                inline_count += 1
+                logger.debug(f"Posting inline comment {i+1}/{len(result.findings)}: {finding.title}")
                 self._post_inline_comment(
                     project=project,
                     repository_id=repository_id,
@@ -95,13 +141,18 @@ class AzureDevOpsClient:
                     finding=finding
                 )
         
+        logger.info(f"Posted {inline_count} inline comments")
+        
         # Always post the overall summary as a top-level comment
+        logger.info("Posting summary comment...")
         self._post_summary_comment(
             project=project,
             repository_id=repository_id,
             pull_request_id=pull_request_id,
             result=result
         )
+        
+        logger.success(f"Successfully posted review comments to PR #{pull_request_id}")
     
     def _detect_language(self, path: str) -> str:
         """Detect programming language from file path."""
@@ -133,29 +184,151 @@ class AzureDevOpsClient:
         self,
         project: str,
         repository_id: str,
-        pull_request_id: int,
+        source_commit_id: Optional[str],
+        target_commit_id: Optional[str],
         change,
         item
     ) -> str:
-        """Get diff content for a specific change."""
+        """Get diff content by getting before/after file content and diffing it."""
+        # If diff is already available, return it
         if hasattr(change, 'diff') and change.diff:
+            logger.debug("Diff already available from API")
             return change.diff
         
-        # Fetch diff content if not provided
+        if 'diff' in change.additional_properties and change.additional_properties['diff']:
+            diff_data = change.additional_properties['diff']
+            if isinstance(diff_data, str):
+                logger.debug("Diff available in additional_properties")
+                return diff_data
+            elif hasattr(diff_data, 'diff'):
+                logger.debug("Diff available as object with diff attribute")
+                return diff_data.diff
+        
+        # Need to get content manually and compute diff
         try:
-            object_id = item['objectId'] if isinstance(item, dict) else item.object_id
-            diff_content = self.git_client.get_pull_request_file_diff(
-                project=project,
-                repository_id=repository_id,
-                pull_request_id=pull_request_id,
-                file_id=object_id
-            )
-            if diff_content and hasattr(diff_content, 'diff'):
-                return diff_content.diff
-        except Exception:
-            pass
+            if isinstance(item, dict):
+                item_path = item['path']
+                original_object_id = item.get('originalObjectId')
+                object_id = item.get('objectId')
+            else:
+                item_path = item.path
+                original_object_id = getattr(item, 'original_object_id', None)
+                object_id = getattr(item, 'object_id', None)
+            
+            # Determine change type based on object IDs
+            has_original = bool(original_object_id)
+            has_current = bool(object_id)
+            
+            if has_current and not has_original:
+                change_type = "add"
+            elif has_original and not has_current:
+                change_type = "delete"
+            else:
+                change_type = "edit"
+            
+            logger.debug(f"Change type determined: {change_type}")
+            
+            if change_type == "add":
+                # New file, use source commit (contains the new file)
+                logger.debug(f"Getting content for new file: {item_path}")
+                after_content = self._get_item_content(
+                    project, repository_id, source_commit_id, item_path
+                )
+                return self._format_added_file_diff(after_content)
+            elif change_type == "delete":
+                # Deleted file, use target commit (contains the file before deletion)
+                logger.debug(f"Getting content for deleted file: {item_path}")
+                before_content = self._get_item_content(
+                    project, repository_id, target_commit_id, item_path
+                )
+                return self._format_deleted_file_diff(before_content)
+            else:
+                # Modified file: before = target (old), after = source (new)
+                logger.debug(f"Getting content for modified file: {item_path}")
+                before_content = ""
+                after_content = ""
+                if target_commit_id:
+                    before_content = self._get_item_content(
+                        project, repository_id, target_commit_id, item_path
+                    )
+                if source_commit_id:
+                    after_content = self._get_item_content(
+                        project, repository_id, source_commit_id, item_path
+                    )
+                return self._compute_unified_diff(before_content, after_content)
+        except Exception as e:
+            logger.error(f"Failed to get diff: {e}")
+            return ""
         
         return ""
+    
+    def _get_item_content(
+        self,
+        project: str,
+        repository_id: str,
+        object_id: str,
+        path: str
+    ) -> str:
+        """Get file content by commit ID."""
+        version_descriptor = GitVersionDescriptor(
+            version=object_id,
+            version_type="commit"
+        )
+        content_stream = self.git_client.get_item_content(
+            project=project,
+            repository_id=repository_id,
+            path=path,
+            version_descriptor=version_descriptor
+        )
+        # Read content from stream
+        content = b''
+        for chunk in content_stream:
+            content += chunk
+        return content.decode('utf-8', errors='replace')
+    
+    def _format_added_file_diff(self, content: str) -> str:
+        """Format diff for a newly added file."""
+        lines = content.splitlines(keepends=True)
+        return ''.join(f'+{line}' for line in lines)
+    
+    def _format_deleted_file_diff(self, content: str) -> str:
+        """Format diff for a deleted file."""
+        lines = content.splitlines(keepends=True)
+        return ''.join(f'-{line}' for line in lines)
+    
+    def _compute_unified_diff(self, before: str, after: str) -> str:
+        """Compute unified diff between before and after content."""
+        import difflib
+        
+        before_lines = before.splitlines()
+        after_lines = after.splitlines()
+        
+        diff = difflib.unified_diff(
+            before_lines,
+            after_lines,
+            fromfile='a',
+            tofile='b',
+            n=3
+        )
+        
+        # Skip the first two lines (--- a +++ b)
+        diff_lines = list(diff)[2:]
+        
+        # Convert to +, -,  format that's easy to read
+        result = []
+        for line in diff_lines:
+            if line.startswith('+'):
+                result.append(line)
+            elif line.startswith('-'):
+                result.append(line)
+            elif line.startswith('@'):
+                # Keep hunk headers
+                result.append(line)
+            else:
+                # Context lines
+                result.append(' ' + line)
+        
+        return '\n'.join(result)
     
     def _post_inline_comment(
         self,

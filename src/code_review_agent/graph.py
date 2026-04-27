@@ -1,4 +1,5 @@
 from typing import TypedDict, List, Optional
+from loguru import logger
 from langgraph.graph import StateGraph, END
 from code_review_agent.models import CodeChange, ReviewFinding, PRSummary, CodeReviewResult, Severity
 from code_review_agent.checkers import UniversalChecker, BackendChecker, FrontendChecker
@@ -19,11 +20,13 @@ class CodeReviewGraph:
     """LangGraph based code review workflow."""
     
     def __init__(self):
+        logger.info("Initializing CodeReviewGraph...")
         self.universal_checker = UniversalChecker()
         self.backend_checker = BackendChecker()
         self.frontend_checker = FrontendChecker()
         self.llm = LLMConfig.get_default_llm()
         self.graph = self._build_graph()
+        logger.success("CodeReviewGraph initialized")
     
     def _build_graph(self) -> StateGraph:
         workflow = StateGraph(ReviewState)
@@ -46,33 +49,43 @@ class CodeReviewGraph:
         return workflow.compile()
     
     def _check_universal(self, state: ReviewState) -> ReviewState:
+        logger.info("[Universal Check] Starting universal code checks...")
         findings = state.get("findings", [])
-        for change in state["changes"]:
+        for i, change in enumerate(state["changes"]):
             if change.is_deleted:
                 continue
+            logger.debug(f"[Universal Check] Checking file {i+1}/{len(state['changes'])}: {change.file_path}")
             new_findings = self.universal_checker.check(change)
             findings.extend(new_findings)
+        logger.success(f"[Universal Check] Completed with {len(findings)} total findings")
         return {"findings": findings}
     
     def _check_backend(self, state: ReviewState) -> ReviewState:
+        logger.info("[Backend Check] Starting backend code checks...")
         findings = state["findings"]
-        for change in state["changes"]:
+        for i, change in enumerate(state["changes"]):
             if change.is_deleted:
                 continue
+            logger.debug(f"[Backend Check] Checking file {i+1}/{len(state['changes'])}: {change.file_path}")
             new_findings = self.backend_checker.check(change)
             findings.extend(new_findings)
+        logger.success(f"[Backend Check] Completed with {len(findings)} total findings")
         return {"findings": findings}
     
     def _check_frontend(self, state: ReviewState) -> ReviewState:
+        logger.info("[Frontend Check] Starting frontend code checks...")
         findings = state["findings"]
-        for change in state["changes"]:
+        for i, change in enumerate(state["changes"]):
             if change.is_deleted:
                 continue
+            logger.debug(f"[Frontend Check] Checking file {i+1}/{len(state['changes'])}: {change.file_path}")
             new_findings = self.frontend_checker.check(change)
             findings.extend(new_findings)
+        logger.success(f"[Frontend Check] Completed with {len(findings)} total findings")
         return {"findings": findings}
     
     def _generate_summary(self, state: ReviewState) -> ReviewState:
+        logger.info("[Summary] Generating code review summary with LLM...")
         findings = state["findings"]
         changes = state["changes"]
         
@@ -92,6 +105,8 @@ class CodeReviewGraph:
             overall_risk = Severity.MAJOR
         else:
             overall_risk = Severity.MINOR
+        
+        logger.debug(f"[Summary] Finding counts - Critical: {counts[Severity.CRITICAL]}, Major: {counts[Severity.MAJOR]}, Minor: {counts[Severity.MINOR]}")
         
         # Generate summary with LLM
         prompt = ChatPromptTemplate.from_template("""
@@ -125,6 +140,7 @@ KEY_CONCERNS:
         findings_bullets = [f"- [{f.severity}] {f.title}: {f.description}" for f in findings]
         files_list = [f"- {c.file_path}" for c in changes]
         
+        logger.debug("[Summary] Invoking LLM to generate summary...")
         response = self.llm.invoke(prompt.format(
             total_changes=len(changes),
             total_findings=len(findings),
@@ -159,6 +175,7 @@ KEY_CONCERNS:
             key_concerns=key_concerns
         )
         
+        logger.success("[Summary] Summary generation completed")
         return {
             "summary": summary,
             "completed": True
