@@ -287,6 +287,37 @@
 </a>
 </li>
 <li class="md-nav__item">
+<a class="md-nav__link" href="#parallel-execution">
+<span class="md-ellipsis">
+      
+        Parallel Execution
+      
+    </span>
+</a>
+<nav aria-label="Parallel Execution" class="md-nav">
+<ul class="md-nav__list">
+<li class="md-nav__item">
+<a class="md-nav__link" href="#1-checker-level-parallelism">
+<span class="md-ellipsis">
+      
+        1. Checker-level Parallelism
+      
+    </span>
+</a>
+</li>
+<li class="md-nav__item">
+<a class="md-nav__link" href="#2-file-level-parallelism">
+<span class="md-ellipsis">
+      
+        2. File-level Parallelism
+      
+    </span>
+</a>
+</li>
+</ul>
+</nav>
+</li>
+<li class="md-nav__item">
 <a class="md-nav__link" href="#langgraph-state">
 <span class="md-ellipsis">
       
@@ -332,10 +363,10 @@
 </a>
 </li>
 <li class="md-nav__item">
-<a class="md-nav__link" href="#sequence-diagram-textual">
+<a class="md-nav__link" href="#sequence-diagram">
 <span class="md-ellipsis">
       
-        Sequence Diagram (Textual)
+        Sequence Diagram
       
     </span>
 </a>
@@ -401,38 +432,52 @@
 <h1 id="architecture">Architecture</h1>
 <p>This document describes the high-level architecture of <code>code-review-agent</code>.</p>
 <h2 id="overview">Overview</h2>
-<p><code>code-review-agent</code> is an AI-powered code review tool integrated with Azure DevOps, built on top of LangGraph for orchestration and supports multiple LLM providers.</p>
+<p><code>code-review-agent</code> is an AI-powered code review tool integrated with Azure DevOps, built on top of LangGraph for orchestration and supports multiple LLM providers. It features <strong>parallel execution</strong> at both the checker level and file level for optimal performance.</p>
 <h2 id="system-architecture">System Architecture</h2>
 <div class="mermaid">flowchart TD
     subgraph Entry["CLI Entry"]
         __main__.py --&gt; agent.py
     end
 
-    agent.py --&gt;|1. Fetch PR changes| Azure[AzureDevOpsClient\n* Get pull request\n* Get iterations\n* Get changes\n* Extract diffs]
+    agent.py --&gt;|1. Fetch PR changes| Azure[AzureDevOpsClient
+* Get pull request
+* Get iterations
+* Get changes
+* Extract diffs]
 
     Azure --&gt; Changes["CodeChange[]&lt;br/&gt;file_path + diff + language"]
 
-    agent.py --&gt;|2. Run review| LangGraph[CodeReviewGraph\nLangGraph State Machine]
+    agent.py --&gt;|2. Run review| LangGraph[CodeReviewGraph
+LangGraph State Machine]
 
     subgraph LangGraph["LangGraph Pipeline"]
-        direction LR
-        START([START]) --&gt; check_universal
-        check_universal --&gt; check_backend
-        check_backend --&gt; check_frontend
-        check_frontend --&gt; generate_summary
+        START([START]) --&gt; check_all
+        check_all --&gt; generate_summary
         generate_summary --&gt; END([END])
     end
 
-    subgraph Checkers["Checkers (Nodes)"]
-        direction TB
-        check_universal --&gt; UniversalChecker --&gt; findings1[accumulate findings]
-        check_backend --&gt; BackendChecker --&gt; findings2[accumulate findings]
-        check_frontend --&gt; FrontendChecker --&gt; findings3[accumulate findings]
+    subgraph ParallelCheck["Parallel Execution (ThreadPoolExecutor)"]
+        direction LR
+        check_all --&gt;|concurrent| Universal[UniversalChecker]
+        check_all --&gt;|concurrent| Backend[BackendChecker]
+        check_all --&gt;|concurrent| Frontend[FrontendChecker]
+
+        Universal --&gt;|parallel files| U1[File 1]
+        Universal --&gt;|parallel files| U2[File 2]
+        Universal --&gt;|parallel files| UN[N files]
+
+        Backend --&gt;|parallel files| B1[File 1]
+        Backend --&gt;|parallel files| B2[File 2]
+        Backend --&gt;|parallel files| BN[N files]
+
+        Frontend --&gt;|parallel files| F1[File 1]
+        Frontend --&gt;|parallel files| F2[File 2]
+        Frontend --&gt;|parallel files| FN[N files]
     end
 
     subgraph CheckerLogic["Each Checker"]
         direction TB
-        A["Receive CodeChange"] --&gt; B["Inject LLM prompt +&lt;br/&gt;Team coding standards"] --&gt; C[Call LLM] --&gt; D["Parse JSON findings"] --&gt; E["Return list of findings"]
+        L["Receive CodeChange[]"] --&gt; M["Inject LLM prompt +&lt;br/&gt;Team coding standards"] --&gt; N[Call LLM] --&gt; O["Parse findings"] --&gt; P["Return list of findings"]
     end
 
     subgraph LLM["LLM Layer"]
@@ -443,23 +488,47 @@
         Provider --&gt; Anthropic
     end
 
-    generate_summary --&gt;|aggregates findings| Summary[PRSummary\n* Count by severity\n* Calculate overall risk\n* LLM generate summary]
+    generate_summary --&gt;|aggregates findings| Summary[PRSummary
+* Count by severity
+* Calculate overall risk
+* LLM generate summary]
 
     LangGraph --&gt; CodeReviewResult
 
-    agent.py --&gt;|3. Post results| Post[post_review_comments\n* Post inline comments\n* Post summary comment]
+    agent.py --&gt;|3. Post results| Post[post_review_comments
+* Post inline comments
+* Post summary comment]
 
     Post --&gt; AzureDevOps[Azure DevOps PR]
 
     CodeReviewResult --&gt; agent.py
 </div>
+<h2 id="parallel-execution">Parallel Execution</h2>
+<p>The system uses <code>ThreadPoolExecutor</code> for two levels of parallelism:</p>
+<h3 id="1-checker-level-parallelism">1. Checker-level Parallelism</h3>
+<p>All 3 checkers run concurrently in the <code>_check_all_parallel</code> node:</p>
+<pre><code class="language-python"># graph.py
+with ThreadPoolExecutor(max_workers=3) as pool:
+    universal_future = pool.submit(run_checker, self.universal_checker, changes)
+    backend_future = pool.submit(run_checker, self.backend_checker, changes)
+    frontend_future = pool.submit(run_checker, self.frontend_checker, changes)
+</code></pre>
+<h3 id="2-file-level-parallelism">2. File-level Parallelism</h3>
+<p>Each checker processes multiple files in parallel using <code>check_batch</code>:</p>
+<pre><code class="language-python"># base_checker.py
+def check_batch(self, changes: List[CodeChange]) -&gt; List[ReviewFinding]:
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        results = list(executor.map(self.check, changes))
+</code></pre>
 <h2 id="langgraph-state">LangGraph State</h2>
 <p>The entire review pipeline shares a single state object:</p>
 <pre><code class="language-python">class ReviewState(TypedDict):
     pr_id: str                       # Pull request ID
     repository: str                  # Repository ID
     changes: List[CodeChange]        # Changed files with diff content
-    findings: List[ReviewFinding]    # Accumulated findings (mutated by nodes)
+    universal_findings: List[ReviewFinding]  # Findings from UniversalChecker
+    backend_findings: List[ReviewFinding]   # Findings from BackendChecker
+    frontend_findings: List[ReviewFinding]  # Findings from FrontendChecker
     summary: Optional[PRSummary]     # Final summary generated at the end
     completed: bool                  # Completion flag
 </code></pre>
@@ -480,12 +549,12 @@
 </tr>
 <tr>
 <td><code>BackendChecker</code></td>
-<td>Backend code</td>
+<td>Backend code (.py, .java, .go, .js, .ts, .rb, .php, .cs, .cpp)</td>
 <td>API contract consistency, N+1 queries, missing indexes, transaction issues, performance blocking calls, observability gaps, retries/timeouts</td>
 </tr>
 <tr>
 <td><code>FrontendChecker</code></td>
-<td>Frontend code</td>
+<td>Frontend code (.js, .jsx, .ts, .tsx, .vue, .svelte, .html, .css, .scss, .less, .astro)</td>
 <td>State race conditions, unnecessary re-renders, accessibility, XSS vulnerabilities, bundle size issues</td>
 </tr>
 </tbody>
@@ -506,7 +575,7 @@
 </tr>
 <tr>
 <td><code>ReviewFinding</code></td>
-<td>Single finding: title, description, severity, category, line numbers, suggestion</td>
+<td>Single finding: title, description, severity, category, file_path, line numbers, suggestion</td>
 </tr>
 <tr>
 <td><code>PRSummary</code></td>
@@ -524,6 +593,7 @@
 <li><code>change.item</code> is now stored in <code>change.additional_properties['item']</code></li>
 <li><code>change.change_type</code> renamed to <code>change.additional_properties['changeType']</code></li>
 <li><code>git_client.create_pull_request_thread()</code> renamed to <code>git_client.create_thread()</code></li>
+<li>Inline comments use <code>CommentThreadContext</code> and <code>CommentPosition</code> SDK objects</li>
 </ul>
 <p>All adaptations are handled in <code>src/code_review_agent/integrations/azure_devops.py</code>.</p>
 <h2 id="entry-flow">Entry Flow</h2>
@@ -536,7 +606,7 @@
 <li>Returns result</li>
 <li>Done.</li>
 </ol>
-<h2 id="sequence-diagram-textual">Sequence Diagram (Textual)</h2>
+<h2 id="sequence-diagram">Sequence Diagram</h2>
 <div class="mermaid">sequenceDiagram
     participant CLI
     participant Agent as CodeReviewAgent
@@ -548,23 +618,24 @@
     Agent-&gt;&gt;ADO: get_pull_request_changes
     ADO--&gt;&gt;Agent: CodeChange[]
 
-    Agent-&gt;&gt;Graph: analyze(CodeChange)
+    Agent-&gt;&gt;Graph: run(CodeChange[])
 
-    par Universal Check
-        Graph-&gt;&gt;Graph: check_universal
-        Graph-&gt;&gt;Graph: UniversalChecker
-    and Backend Check
-        Graph-&gt;&gt;Graph: check_backend
-        Graph-&gt;&gt;Graph: BackendChecker
-    and Frontend Check
-        Graph-&gt;&gt;Graph: check_frontend
-        Graph-&gt;&gt;Graph: FrontendChecker
+    par Parallel Checkers
+        par UniversalChecker
+            Graph-&gt;&gt;UniversalChecker: check_batch(changes)
+            UniversalChecker-&gt;&gt;UniversalChecker: Parallel LLM calls per file
+        and BackendChecker
+            Graph-&gt;&gt;BackendChecker: check_batch(changes)
+            BackendChecker-&gt;&gt;BackendChecker: Parallel LLM calls per file
+        and FrontendChecker
+            Graph-&gt;&gt;FrontendChecker: check_batch(changes)
+            FrontendChecker-&gt;&gt;FrontendChecker: Parallel LLM calls per file
+        end
     end
 
-    Graph--&gt;&gt;Agent: findings
+    Graph-&gt;&gt;Graph: _generate_summary(all_findings)
 
-    Agent-&gt;&gt;LLM: generate_summary(findings)
-    LLM--&gt;&gt;Agent: PRSummary
+    Graph--&gt;&gt;Agent: CodeReviewResult
 
     Agent-&gt;&gt;ADO: post_review_comments
 </div>
