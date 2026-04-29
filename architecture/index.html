@@ -371,6 +371,46 @@
     </span>
 </a>
 </li>
+<li class="md-nav__item">
+<a class="md-nav__link" href="#analyzer-pipeline">
+<span class="md-ellipsis">
+      
+        Analyzer Pipeline
+      
+    </span>
+</a>
+</li>
+<li class="md-nav__item">
+<a class="md-nav__link" href="#analyzer-components">
+<span class="md-ellipsis">
+      
+        Analyzer Components
+      
+    </span>
+</a>
+<nav aria-label="Analyzer Components" class="md-nav">
+<ul class="md-nav__list">
+<li class="md-nav__item">
+<a class="md-nav__link" href="#static-analysis-analyzersstatic_analyzerpy">
+<span class="md-ellipsis">
+      
+        Static Analysis (analyzers/static_analyzer.py)
+      
+    </span>
+</a>
+</li>
+<li class="md-nav__item">
+<a class="md-nav__link" href="#impact-analysis-analyzersimpact_analyzerpy">
+<span class="md-ellipsis">
+      
+        Impact Analysis (analyzers/impact_analyzer.py)
+      
+    </span>
+</a>
+</li>
+</ul>
+</nav>
+</li>
 </ul>
 </nav>
 </li>
@@ -436,72 +476,58 @@
 <h2 id="system-architecture">System Architecture</h2>
 <div class="mermaid">flowchart TD
     subgraph Entry["CLI Entry"]
-        __main__.py --&gt; agent.py
+        A0[__main__.py] --&gt; A1[agent.py]
     end
 
-    agent.py --&gt;|1. Fetch PR changes| Azure[AzureDevOpsClient
-* Get pull request
-* Get iterations
-* Get changes
-* Extract diffs]
+    A1 --&gt;|1. Fetch PR changes| B1[AzureDevOpsClient&lt;br/&gt;• Get pull request&lt;br/&gt;• Get iterations&lt;br/&gt;• Get changes&lt;br/&gt;• Extract diffs]
 
-    Azure --&gt; Changes["CodeChange[]&lt;br/&gt;file_path + diff + language"]
+    B1 --&gt; B2["CodeChange[]&lt;br/&gt;file_path + diff + language"]
 
-    agent.py --&gt;|2. Run review| LangGraph[CodeReviewGraph
-LangGraph State Machine]
+    A1 --&gt;|2. Run review| B3[CodeReviewGraph&lt;br/&gt;LangGraph State Machine]
 
-    subgraph LangGraph["LangGraph Pipeline"]
-        START([START]) --&gt; check_all
-        check_all --&gt; generate_summary
-        generate_summary --&gt; END([END])
-    end
+    B3 --&gt; C1[START]
 
-    subgraph ParallelCheck["Parallel Execution (ThreadPoolExecutor)"]
-        direction LR
-        check_all --&gt;|concurrent| Universal[UniversalChecker]
-        check_all --&gt;|concurrent| Backend[BackendChecker]
-        check_all --&gt;|concurrent| Frontend[FrontendChecker]
+    C1 --&gt; C2[check_all&lt;br/&gt;LLM Checkers]
 
-        Universal --&gt;|parallel files| U1[File 1]
-        Universal --&gt;|parallel files| U2[File 2]
-        Universal --&gt;|parallel files| UN[N files]
+    C2 --&gt;|concurrent| D1[UniversalChecker]
+    C2 --&gt;|concurrent| D2[BackendChecker]
+    C2 --&gt;|concurrent| D3[FrontendChecker]
 
-        Backend --&gt;|parallel files| B1[File 1]
-        Backend --&gt;|parallel files| B2[File 2]
-        Backend --&gt;|parallel files| BN[N files]
+    D1 --&gt; D4["Findings[]"]
+    D2 --&gt; D5["Findings[]"]
+    D3 --&gt; D6["Findings[]"]
 
-        Frontend --&gt;|parallel files| F1[File 1]
-        Frontend --&gt;|parallel files| F2[File 2]
-        Frontend --&gt;|parallel files| FN[N files]
-    end
+    C2 --&gt; C3[run_static_analysis&lt;br/&gt;Static Analysis]
 
-    subgraph CheckerLogic["Each Checker"]
-        direction TB
-        L["Receive CodeChange[]"] --&gt; M["Inject LLM prompt +&lt;br/&gt;Team coding standards"] --&gt; N[Call LLM] --&gt; O["Parse findings"] --&gt; P["Return list of findings"]
-    end
+    C3 --&gt; E1[ruff&lt;br/&gt;Python linting]
+    C3 --&gt; E2[bandit&lt;br/&gt;Python security]
+    C3 --&gt; E3[eslint&lt;br/&gt;JS/TS]
 
-    subgraph LLM["LLM Layer"]
-        direction TB
-        LLMConfig --&gt;|get_default_llm| Provider{Provider}
-        Provider --&gt; OpenAI
-        Provider --&gt; Gemini
-        Provider --&gt; Anthropic
-    end
+    E1 --&gt; E4["StaticFindings[]"]
+    E2 --&gt; E4
+    E3 --&gt; E4
 
-    generate_summary --&gt;|aggregates findings| Summary[PRSummary
-* Count by severity
-* Calculate overall risk
-* LLM generate summary]
+    C3 --&gt; C4[run_impact_analysis&lt;br/&gt;Impact Analysis]
 
-    LangGraph --&gt; CodeReviewResult
+    C4 --&gt; F1[ImpactAnalyzer&lt;br/&gt;AST call chains]
+    C4 --&gt; F2[PatternImpactAnalyzer&lt;br/&gt;Breaking changes]
 
-    agent.py --&gt;|3. Post results| Post[post_review_comments
-* Post inline comments
-* Post summary comment]
+    F1 --&gt; F3["ImpactFindings[]"]
+    F2 --&gt; F3
 
-    Post --&gt; AzureDevOps[Azure DevOps PR]
+    C4 --&gt; C5[generate_summary&lt;br/&gt;Aggregate + Summarize]
 
-    CodeReviewResult --&gt; agent.py
+    C5 --&gt; G1["PRSummary&lt;br/&gt;• Count by severity&lt;br/&gt;• Overall risk&lt;br/&gt;• LLM summary"]
+
+    C5 --&gt; C6[END]
+
+    G1 --&gt; H1[CodeReviewResult]
+
+    A1 --&gt;|3. Post results| I1[post_review_comments&lt;br/&gt;• Inline comments&lt;br/&gt;• Summary comment]
+
+    I1 --&gt; I2[Azure DevOps PR]
+
+    H1 -.-&gt;|Return| A1
 </div>
 <h2 id="parallel-execution">Parallel Execution</h2>
 <p>The system uses <code>ThreadPoolExecutor</code> for two levels of parallelism:</p>
@@ -529,6 +555,8 @@ def check_batch(self, changes: List[CodeChange]) -&gt; List[ReviewFinding]:
     universal_findings: List[ReviewFinding]  # Findings from UniversalChecker
     backend_findings: List[ReviewFinding]   # Findings from BackendChecker
     frontend_findings: List[ReviewFinding]  # Findings from FrontendChecker
+    static_findings: List[ReviewFinding]     # Findings from Static Analysis
+    impact_findings: List[ReviewFinding]     # Findings from Impact Analysis
     summary: Optional[PRSummary]     # Final summary generated at the end
     completed: bool                  # Completion flag
 </code></pre>
@@ -620,7 +648,7 @@ def check_batch(self, changes: List[CodeChange]) -&gt; List[ReviewFinding]:
 
     Agent-&gt;&gt;Graph: run(CodeChange[])
 
-    par Parallel Checkers
+    par 1. LLM Checkers (Parallel)
         par UniversalChecker
             Graph-&gt;&gt;UniversalChecker: check_batch(changes)
             UniversalChecker-&gt;&gt;UniversalChecker: Parallel LLM calls per file
@@ -633,12 +661,128 @@ def check_batch(self, changes: List[CodeChange]) -&gt; List[ReviewFinding]:
         end
     end
 
+    Graph-&gt;&gt;Graph: 2. run_static_analysis
+
+    par 3. Static Analysis Tools
+        Graph-&gt;&gt;Graph: ruff (Python files)
+        Graph-&gt;&gt;Graph: bandit (Python files)
+        Graph-&gt;&gt;Graph: eslint (JS/TS files)
+    end
+
+    Graph-&gt;&gt;Graph: 4. run_impact_analysis
+
+    par 5. Impact Analysis
+        Graph-&gt;&gt;Graph: ImpactAnalyzer (AST call chains)
+        Graph-&gt;&gt;Graph: PatternImpactAnalyzer (breaking changes)
+    end
+
     Graph-&gt;&gt;Graph: _generate_summary(all_findings)
 
     Graph--&gt;&gt;Agent: CodeReviewResult
 
     Agent-&gt;&gt;ADO: post_review_comments
 </div>
+<h2 id="analyzer-pipeline">Analyzer Pipeline</h2>
+<div class="mermaid">flowchart LR
+    subgraph Input["PR Changes"]
+        Files[Changed Files]
+    end
+
+    subgraph LLM["LLM-Based Analysis (Parallel)"]
+        UC[UniversalChecker]
+        BC[BackendChecker]
+        FC[FrontendChecker]
+    end
+
+    subgraph Static["Static Analysis"]
+        RA[StaticAnalyzer]
+        R[ruff]
+        B[bandit]
+        E[eslint]
+        R &amp; B &amp; E --&gt; RA
+    end
+
+    subgraph Impact["Impact Analysis"]
+        IA[ImpactAnalyzer&lt;br/&gt;AST-based]
+        PA[PatternImpactAnalyzer&lt;br/&gt;Pattern-based]
+    end
+
+    subgraph Output["Unified Output"]
+        F["ReviewFinding[]"]
+        Sum[PRSummary]
+    end
+
+    Files --&gt; LLM
+    Files --&gt; Static
+    Files --&gt; Impact
+
+    UC --&gt; F
+    BC --&gt; F
+    FC --&gt; F
+    RA --&gt; F
+    IA --&gt; F
+    PA --&gt; F
+
+    F --&gt; Sum
+</div>
+<h2 id="analyzer-components">Analyzer Components</h2>
+<h3 id="static-analysis-analyzersstatic_analyzerpy">Static Analysis (<code>analyzers/static_analyzer.py</code>)</h3>
+<p>Integrated static analysis tools:</p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Language</th>
+<th>What it checks</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ruff</code></td>
+<td>Python</td>
+<td>Linting, code style, complexity</td>
+</tr>
+<tr>
+<td><code>bandit</code></td>
+<td>Python</td>
+<td>Security vulnerabilities</td>
+</tr>
+<tr>
+<td><code>eslint</code></td>
+<td>JavaScript/TypeScript</td>
+<td>Code style, potential bugs</td>
+</tr>
+</tbody>
+</table>
+<p>Features:
+- Auto-detects available tools on the system
+- Converts tool output to standardized <code>ReviewFinding</code> format
+- Severity mapping from tool-specific to unified severity levels</p>
+<h3 id="impact-analysis-analyzersimpact_analyzerpy">Impact Analysis (<code>analyzers/impact_analyzer.py</code>)</h3>
+<p>Analyzes potential impact of code changes:</p>
+<table>
+<thead>
+<tr>
+<th>Analyzer</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ImpactAnalyzer</code></td>
+<td>AST-based function call tracking</td>
+</tr>
+<tr>
+<td><code>PatternImpactAnalyzer</code></td>
+<td>Pattern matching for breaking changes</td>
+</tr>
+</tbody>
+</table>
+<p>Detects:
+- Deleted functions/classes (breaking changes)
+- API contract changes
+- Decorator changes on public APIs
+- Pattern-based breaking change detection</p>
 </article>
 </div>
 <script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>

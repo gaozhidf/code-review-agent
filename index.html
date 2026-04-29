@@ -511,6 +511,28 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#static-analysis-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Static Analysis Integration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#impact-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Impact Analysis
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#azure-devops-workflow-integration" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -762,6 +784,19 @@
 <li>Accessibility problems (missing semantic HTML, ARIA issues, keyboard navigation gaps)</li>
 <li>Performance issues (large bundle size, unnecessary renders)</li>
 <li>Client-side security risks (XSS vulnerabilities, unsafe DOM usage)</li>
+</ul>
+<h3 id="static-analysis-integration">Static Analysis Integration</h3>
+<ul>
+<li><strong>Python</strong>: ruff (linting), bandit (security)</li>
+<li><strong>JavaScript/TypeScript</strong>: eslint</li>
+<li>Auto-detection of available tools</li>
+<li>Deterministic detection of known patterns</li>
+</ul>
+<h3 id="impact-analysis">Impact Analysis</h3>
+<ul>
+<li>AST-based call chain analysis (for Python)</li>
+<li>Pattern-based breaking change detection</li>
+<li>Detects deleted functions/classes, API contract changes</li>
 </ul>
 <h3 id="azure-devops-workflow-integration">Azure DevOps Workflow Integration</h3>
 <ul>
