@@ -22,6 +22,16 @@ AI-powered code review agent integrated with Azure DevOps, supporting multiple L
 - Performance issues (large bundle size, unnecessary renders)
 - Client-side security risks (XSS vulnerabilities, unsafe DOM usage)
 
+### Static Analysis Integration
+- **Python**: ruff (linting), bandit (security)
+- **JavaScript/TypeScript**: eslint
+- Deterministic detection of known patterns
+
+### Impact Analysis
+- Detects breaking changes (deleted functions/classes)
+- Pattern-based impact detection
+- AST-based call chain analysis (for Python)
+
 ### Azure DevOps Workflow Integration
 - Inline PR comments with severity classification (critical > major > minor)
 - PR-level risk summary explaining what changed and why it matters
@@ -67,10 +77,13 @@ flowchart TD
     A[Trigger: Run agent on PR] --> B[Fetch PR changes from Azure DevOps]
     B --> C[Extract diff content for each changed file]
     C --> D[LangGraph Review Pipeline]
-    D --> E[Aggregate findings + generate summary]
-    E --> F[Post inline comments to PR lines]
-    F --> G[Post overall summary as top-level comment]
-    G --> H[Done - Human review proceeds]
+    D --> E[LLM Checkers: Universal + Backend + Frontend]
+    E --> F[Static Analysis: ruff/bandit/eslint]
+    F --> G[Impact Analysis: Breaking Change Detection]
+    G --> H[Aggregate findings + generate summary]
+    H --> I[Post inline comments to PR lines]
+    I --> J[Post overall summary as top-level comment]
+    J --> K[Done - Human review proceeds]
 ```
 
 ### Full System Architecture
@@ -94,11 +107,13 @@ flowchart TD
     
     subgraph LangGraph["LangGraph Pipeline"]
         START([START]) --> check_all
-        check_all --> generate_summary
+        check_all --> run_static_analysis
+        run_static_analysis --> run_impact_analysis
+        run_impact_analysis --> generate_summary
         generate_summary --> END([END])
     end
     
-    subgraph ParallelCheck["Parallel Execution (ThreadPoolExecutor)"]
+    subgraph ParallelCheck["LLM Checkers (Parallel via ThreadPoolExecutor)"]
         direction LR
         check_all -->|concurrent| Universal[UniversalChecker]
         check_all -->|concurrent| Backend[BackendChecker]
@@ -117,7 +132,24 @@ flowchart TD
         Frontend -->|parallel files| FN[N files]
     end
     
-    subgraph CheckerLogic["Each Checker"]
+    subgraph StaticAnalysis["Static Analysis (Sequential)"]
+        direction LR
+        run_static_analysis --> StaticAnalyzer[StaticAnalyzer
+        * ruff (Python linting)
+        * bandit (Python security)
+        * eslint (JS/TS)]
+        StaticAnalyzer --> StaticResults[ReviewFinding[]]
+    end
+    
+    subgraph ImpactAnalysis["Impact Analysis (Sequential)"]
+        direction LR
+        run_impact_analysis --> ImpactAnalyzer[ImpactAnalyzer
+        * ImpactAnalyzer (AST call chains)
+        * PatternImpactAnalyzer (breaking changes)]
+        ImpactAnalyzer --> ImpactResults[ReviewFinding[]]
+    end
+    
+    subgraph CheckerLogic["Each LLM Checker"]
         direction TB
         L["Receive CodeChange[]"] --> M["Inject LLM prompt +<br/>Team coding standards"] --> N[Call LLM] --> O["Parse findings"] --> P["Return list of findings"]
     end
@@ -130,7 +162,7 @@ flowchart TD
         Provider --> Anthropic
     end
     
-    generate_summary -->|aggregates findings| Summary[PRSummary
+    generate_summary -->|aggregates all findings| Summary[PRSummary
     * Count by severity
     * Calculate overall risk
     * LLM generate summary]
@@ -145,6 +177,58 @@ flowchart TD
     
     CodeReviewResult --> agent.py
 ```
+
+### Code Review Pipeline Detail
+
+```mermaid
+flowchart LR
+    subgraph Input["PR Changes"]
+        C1[Changed Files]
+        D1[Diffs]
+        L1[Languages]
+    end
+    
+    subgraph LLM_Layer["LLM-Based Analysis"]
+        U[UniversalChecker]
+        B[BackendChecker]
+        F[FrontendChecker]
+    end
+    
+    subgraph Static_Layer["Static Analysis"]
+        R[ruff]
+        BT[bandit]
+        E[eslint]
+    end
+    
+    subgraph Impact_Layer["Impact Analysis"]
+        IA[ImpactAnalyzer<br/>AST Call Chains]
+        PA[PatternImpactAnalyzer<br/>Breaking Changes]
+    end
+    
+    subgraph Output["Findings"]
+        F1[Critical]
+        F2[Major]
+        F3[Minor]
+    end
+    
+    C1 --> U & B & F
+    C1 --> R & BT & E
+    C1 --> IA & PA
+    
+    U & B & F --> Output
+    R & BT & E --> Output
+    IA & PA --> Output
+```
+
+### Detection Types by Analyzer
+
+| Analyzer | Detection Type | Examples |
+|----------|----------------|----------|
+| **UniversalChecker** | Logic errors, missing error handling, exposed secrets, complexity | Hardcoded passwords, null pointer risks |
+| **BackendChecker** | N+1 queries, missing indexes, transaction issues, observability gaps | Unpaginated DB queries, missing retries |
+| **FrontendChecker** | Race conditions, XSS, accessibility issues, re-renders | Unsafe DOM usage, missing ARIA |
+| **StaticAnalyzer** | Known code patterns (via linters) | Style violations, security hotspots |
+| **ImpactAnalyzer** | Breaking changes, deleted APIs | Removed public methods, changed signatures |
 
 ### Parallel Execution Architecture
 
@@ -198,13 +282,26 @@ code-review-agent/
 │   ├── graph.py             # LangGraph definition (CodeReviewGraph)
 │   ├── models.py            # Data models (CodeChange, Finding, PRSummary...)
 │   ├── standards.py         # Team coding standards injection
-│   ├── llm_config.py        # LLM provider configuration
-│   ├── checkers/            # Individual checkers
-│   │   ├── universal.py     # Universal checks
-│   │   ├── backend.py       # Backend-specific checks
-│   │   └── frontend.py      # Frontend-specific checks
+│   ├── llm_config.py         # LLM provider configuration
+│   ├── checkers/             # LLM-based code checkers
+│   │   ├── __init__.py
+│   │   ├── base_checker.py       # Base checker with file batching
+│   │   ├── universal_checker.py  # Universal checks (all languages)
+│   │   ├── backend_checker.py    # Backend-specific checks
+│   │   └── frontend_checker.py   # Frontend-specific checks
+│   ├── analyzers/            # Static & impact analysis
+│   │   ├── __init__.py
+│   │   ├── static_analyzer.py    # ruff, bandit, eslint integration
+│   │   └── impact_analyzer.py     # Breaking change detection
 │   ├── integrations/
-│   │   └── azure_devops.py  # Azure DevOps API client (fixed for v7.1.0b4)
+│   │   └── azure_devops.py  # Azure DevOps API client
+├── tests/                   # Test suite
+│   ├── test_data/
+│   │   └── golden_dataset.py  # Known issues for validation
+│   ├── test_static_analyzer.py
+│   ├── test_impact_analyzer.py
+│   └── test_analyzer_integration.py
+├── docs/                    # MkDocs documentation
 ├── pyproject.toml
 ├── uv.lock
 └── README.md

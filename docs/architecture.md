@@ -11,72 +11,58 @@ This document describes the high-level architecture of `code-review-agent`.
 ```mermaid
 flowchart TD
     subgraph Entry["CLI Entry"]
-        __main__.py --> agent.py
+        A0[__main__.py] --> A1[agent.py]
     end
-    
-    agent.py -->|1. Fetch PR changes| Azure[AzureDevOpsClient
-* Get pull request
-* Get iterations
-* Get changes
-* Extract diffs]
-    
-    Azure --> Changes["CodeChange[]<br/>file_path + diff + language"]
-    
-    agent.py -->|2. Run review| LangGraph[CodeReviewGraph
-LangGraph State Machine]
-    
-    subgraph LangGraph["LangGraph Pipeline"]
-        START([START]) --> check_all
-        check_all --> generate_summary
-        generate_summary --> END([END])
-    end
-    
-    subgraph ParallelCheck["Parallel Execution (ThreadPoolExecutor)"]
-        direction LR
-        check_all -->|concurrent| Universal[UniversalChecker]
-        check_all -->|concurrent| Backend[BackendChecker]
-        check_all -->|concurrent| Frontend[FrontendChecker]
-        
-        Universal -->|parallel files| U1[File 1]
-        Universal -->|parallel files| U2[File 2]
-        Universal -->|parallel files| UN[N files]
-        
-        Backend -->|parallel files| B1[File 1]
-        Backend -->|parallel files| B2[File 2]
-        Backend -->|parallel files| BN[N files]
-        
-        Frontend -->|parallel files| F1[File 1]
-        Frontend -->|parallel files| F2[File 2]
-        Frontend -->|parallel files| FN[N files]
-    end
-    
-    subgraph CheckerLogic["Each Checker"]
-        direction TB
-        L["Receive CodeChange[]"] --> M["Inject LLM prompt +<br/>Team coding standards"] --> N[Call LLM] --> O["Parse findings"] --> P["Return list of findings"]
-    end
-    
-    subgraph LLM["LLM Layer"]
-        direction TB
-        LLMConfig -->|get_default_llm| Provider{Provider}
-        Provider --> OpenAI
-        Provider --> Gemini
-        Provider --> Anthropic
-    end
-    
-    generate_summary -->|aggregates findings| Summary[PRSummary
-* Count by severity
-* Calculate overall risk
-* LLM generate summary]
-    
-    LangGraph --> CodeReviewResult
-    
-    agent.py -->|3. Post results| Post[post_review_comments
-* Post inline comments
-* Post summary comment]
-    
-    Post --> AzureDevOps[Azure DevOps PR]
-    
-    CodeReviewResult --> agent.py
+
+    A1 -->|1. Fetch PR changes| B1[AzureDevOpsClient<br/>• Get pull request<br/>• Get iterations<br/>• Get changes<br/>• Extract diffs]
+
+    B1 --> B2["CodeChange[]<br/>file_path + diff + language"]
+
+    A1 -->|2. Run review| B3[CodeReviewGraph<br/>LangGraph State Machine]
+
+    B3 --> C1[START]
+
+    C1 --> C2[check_all<br/>LLM Checkers]
+
+    C2 -->|concurrent| D1[UniversalChecker]
+    C2 -->|concurrent| D2[BackendChecker]
+    C2 -->|concurrent| D3[FrontendChecker]
+
+    D1 --> D4["Findings[]"]
+    D2 --> D5["Findings[]"]
+    D3 --> D6["Findings[]"]
+
+    C2 --> C3[run_static_analysis<br/>Static Analysis]
+
+    C3 --> E1[ruff<br/>Python linting]
+    C3 --> E2[bandit<br/>Python security]
+    C3 --> E3[eslint<br/>JS/TS]
+
+    E1 --> E4["StaticFindings[]"]
+    E2 --> E4
+    E3 --> E4
+
+    C3 --> C4[run_impact_analysis<br/>Impact Analysis]
+
+    C4 --> F1[ImpactAnalyzer<br/>AST call chains]
+    C4 --> F2[PatternImpactAnalyzer<br/>Breaking changes]
+
+    F1 --> F3["ImpactFindings[]"]
+    F2 --> F3
+
+    C4 --> C5[generate_summary<br/>Aggregate + Summarize]
+
+    C5 --> G1["PRSummary<br/>• Count by severity<br/>• Overall risk<br/>• LLM summary"]
+
+    C5 --> C6[END]
+
+    G1 --> H1[CodeReviewResult]
+
+    A1 -->|3. Post results| I1[post_review_comments<br/>• Inline comments<br/>• Summary comment]
+
+    I1 --> I2[Azure DevOps PR]
+
+    H1 -.->|Return| A1
 ```
 
 ## Parallel Execution
@@ -118,6 +104,8 @@ class ReviewState(TypedDict):
     universal_findings: List[ReviewFinding]  # Findings from UniversalChecker
     backend_findings: List[ReviewFinding]   # Findings from BackendChecker
     frontend_findings: List[ReviewFinding]  # Findings from FrontendChecker
+    static_findings: List[ReviewFinding]     # Findings from Static Analysis
+    impact_findings: List[ReviewFinding]     # Findings from Impact Analysis
     summary: Optional[PRSummary]     # Final summary generated at the end
     completed: bool                  # Completion flag
 ```
@@ -178,7 +166,7 @@ sequenceDiagram
 
     Agent->>Graph: run(CodeChange[])
 
-    par Parallel Checkers
+    par 1. LLM Checkers (Parallel)
         par UniversalChecker
             Graph->>UniversalChecker: check_batch(changes)
             UniversalChecker->>UniversalChecker: Parallel LLM calls per file
@@ -191,9 +179,102 @@ sequenceDiagram
         end
     end
 
+    Graph->>Graph: 2. run_static_analysis
+
+    par 3. Static Analysis Tools
+        Graph->>Graph: ruff (Python files)
+        Graph->>Graph: bandit (Python files)
+        Graph->>Graph: eslint (JS/TS files)
+    end
+
+    Graph->>Graph: 4. run_impact_analysis
+
+    par 5. Impact Analysis
+        Graph->>Graph: ImpactAnalyzer (AST call chains)
+        Graph->>Graph: PatternImpactAnalyzer (breaking changes)
+    end
+
     Graph->>Graph: _generate_summary(all_findings)
 
     Graph-->>Agent: CodeReviewResult
 
     Agent->>ADO: post_review_comments
 ```
+
+## Analyzer Pipeline
+
+```mermaid
+flowchart LR
+    subgraph Input["PR Changes"]
+        Files[Changed Files]
+    end
+
+    subgraph LLM["LLM-Based Analysis (Parallel)"]
+        UC[UniversalChecker]
+        BC[BackendChecker]
+        FC[FrontendChecker]
+    end
+
+    subgraph Static["Static Analysis"]
+        RA[StaticAnalyzer]
+        R[ruff]
+        B[bandit]
+        E[eslint]
+        R & B & E --> RA
+    end
+
+    subgraph Impact["Impact Analysis"]
+        IA[ImpactAnalyzer<br/>AST-based]
+        PA[PatternImpactAnalyzer<br/>Pattern-based]
+    end
+
+    subgraph Output["Unified Output"]
+        F["ReviewFinding[]"]
+        Sum[PRSummary]
+    end
+
+    Files --> LLM
+    Files --> Static
+    Files --> Impact
+
+    UC --> F
+    BC --> F
+    FC --> F
+    RA --> F
+    IA --> F
+    PA --> F
+
+    F --> Sum
+```
+
+## Analyzer Components
+
+### Static Analysis (`analyzers/static_analyzer.py`)
+
+Integrated static analysis tools:
+
+| Tool | Language | What it checks |
+|------|----------|----------------|
+| `ruff` | Python | Linting, code style, complexity |
+| `bandit` | Python | Security vulnerabilities |
+| `eslint` | JavaScript/TypeScript | Code style, potential bugs |
+
+Features:
+- Auto-detects available tools on the system
+- Converts tool output to standardized `ReviewFinding` format
+- Severity mapping from tool-specific to unified severity levels
+
+### Impact Analysis (`analyzers/impact_analyzer.py`)
+
+Analyzes potential impact of code changes:
+
+| Analyzer | Purpose |
+|----------|---------|
+| `ImpactAnalyzer` | AST-based function call tracking |
+| `PatternImpactAnalyzer` | Pattern matching for breaking changes |
+
+Detects:
+- Deleted functions/classes (breaking changes)
+- API contract changes
+- Decorator changes on public APIs
+- Pattern-based breaking change detection

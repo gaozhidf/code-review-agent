@@ -29,6 +29,7 @@ code-review-agent/
 ├── docs/              # Documentation source
 │   ├── index.md
 │   ├── getting-started.md
+│   ├── architecture.md
 │   ├── configuration.md
 │   ├── usage.md
 │   ├── team-standards.md
@@ -42,14 +43,24 @@ code-review-agent/
 │       ├── agent.py       # Main agent
 │       ├── graph.py       # LangGraph workflow
 │       ├── standards.py   # Team standards learning
-│       ├── checkers/      # Code checkers
+│       ├── checkers/      # LLM-based code checkers
+│       │   ├── __init__.py
 │       │   ├── base_checker.py
 │       │   ├── universal_checker.py
 │       │   ├── backend_checker.py
 │       │   └── frontend_checker.py
+│       ├── analyzers/     # Static & impact analysis
+│       │   ├── __init__.py
+│       │   ├── static_analyzer.py
+│       │   └── impact_analyzer.py
 │       └── integrations/
 │           └── azure_devops.py
 └── tests/
+    ├── test_data/
+    │   └── golden_dataset.py
+    ├── test_static_analyzer.py
+    ├── test_impact_analyzer.py
+    ├── test_analyzer_integration.py
     └── test_review.py
 ```
 

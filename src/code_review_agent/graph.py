@@ -5,6 +5,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from code_review_agent.models import CodeChange, ReviewFinding, PRSummary, CodeReviewResult, Severity
 from code_review_agent.checkers import UniversalChecker, BackendChecker, FrontendChecker
 from code_review_agent.llm_config import LLMConfig
+from code_review_agent.analyzers import get_static_analyzer, get_pattern_analyzer
 from langchain_core.prompts import ChatPromptTemplate
 from concurrent.futures import ThreadPoolExecutor
 import concurrent.futures
@@ -17,6 +18,8 @@ class ReviewState(TypedDict):
     universal_findings: Annotated[List[ReviewFinding], "extend"]
     backend_findings: Annotated[List[ReviewFinding], "extend"]
     frontend_findings: Annotated[List[ReviewFinding], "extend"]
+    static_findings: Annotated[List[ReviewFinding], "extend"]
+    impact_findings: Annotated[List[ReviewFinding], "extend"]
     summary: Optional[PRSummary]
     completed: bool
 
@@ -24,25 +27,45 @@ class ReviewState(TypedDict):
 class CodeReviewGraph:
     """LangGraph based code review workflow with parallel execution."""
 
-    def __init__(self, max_workers: int = 10):
+    def __init__(self, max_workers: int = 10, enable_static_analysis: bool = True,
+                 enable_impact_analysis: bool = True):
         logger.info("Initializing CodeReviewGraph (parallel mode)...")
         self.universal_checker = UniversalChecker()
         self.backend_checker = BackendChecker()
         self.frontend_checker = FrontendChecker()
         self.llm = LLMConfig.get_default_llm()
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        self.enable_static_analysis = enable_static_analysis
+        self.enable_impact_analysis = enable_impact_analysis
+
+        # Initialize analyzers
+        if enable_static_analysis:
+            self.static_analyzer = get_static_analyzer()
+            logger.info(f"[Static] Available tools: {list(self.static_analyzer.available_tools.keys())}")
+        else:
+            self.static_analyzer = None
+
+        if enable_impact_analysis:
+            self.pattern_analyzer = get_pattern_analyzer()
+        else:
+            self.pattern_analyzer = None
+
         self.graph = self._build_graph()
         logger.success("CodeReviewGraph initialized (parallel mode)")
 
     def _build_graph(self) -> StateGraph:
         workflow = StateGraph(ReviewState)
 
-        # Add nodes - use sync functions, run parallelism inside
+        # Add nodes
         workflow.add_node("check_all", self._check_all_parallel)
+        workflow.add_node("run_static_analysis", self._run_static_analysis)
+        workflow.add_node("run_impact_analysis", self._run_impact_analysis)
         workflow.add_node("generate_summary", self._generate_summary)
 
-        # Sequential: check all -> generate summary
-        workflow.add_edge("check_all", "generate_summary")
+        # Sequential flow
+        workflow.add_edge("check_all", "run_static_analysis")
+        workflow.add_edge("run_static_analysis", "run_impact_analysis")
+        workflow.add_edge("run_impact_analysis", "generate_summary")
         workflow.add_edge("generate_summary", END)
 
         workflow.set_entry_point("check_all")
@@ -81,18 +104,58 @@ class CodeReviewGraph:
             "frontend_findings": frontend_findings,
         }
 
+    def _run_static_analysis(self, state: ReviewState) -> ReviewState:
+        """Run static analysis tools on changed files."""
+        if not self.enable_static_analysis or not self.static_analyzer:
+            logger.info("[Static] Static analysis disabled, skipping...")
+            return {"static_findings": []}
+
+        changes = [c for c in state["changes"] if not c.is_deleted]
+        logger.info(f"[Static] Running static analysis on {len(changes)} files...")
+
+        all_findings = []
+        for change in changes:
+            # For static analysis, we need the full file content
+            # In a real implementation, we would fetch the full file from the repo
+            # For now, we analyze the diff as content
+            tool_results = self.static_analyzer.analyze_file(change.file_path, change.diff)
+            findings = self.static_analyzer.convert_to_findings(tool_results)
+            all_findings.extend(findings)
+
+        logger.success(f"[Static] Found {len(all_findings)} issues from static analysis")
+        return {"static_findings": all_findings}
+
+    def _run_impact_analysis(self, state: ReviewState) -> ReviewState:
+        """Run impact analysis on changed files."""
+        if not self.enable_impact_analysis or not self.pattern_analyzer:
+            logger.info("[Impact] Impact analysis disabled, skipping...")
+            return {"impact_findings": []}
+
+        changes = state["changes"]
+        logger.info(f"[Impact] Running impact analysis on {len(changes)} files...")
+
+        all_findings = []
+        for change in changes:
+            impacts = self.pattern_analyzer.analyze(change)
+            findings = self.pattern_analyzer.convert_to_findings(impacts)
+            all_findings.extend(findings)
+
+        logger.success(f"[Impact] Found {len(all_findings)} potential impacts")
+        return {"impact_findings": all_findings}
+
     def _generate_summary(self, state: ReviewState) -> ReviewState:
         """Generate summary using LLM."""
         logger.info("[Summary] Generating code review summary with LLM...")
 
-        all_findings = state.get("findings", [])
         changes = state["changes"]
 
-        # Combine findings from all checkers
+        # Combine findings from all sources
         universal = state.get("universal_findings", [])
         backend = state.get("backend_findings", [])
         frontend = state.get("frontend_findings", [])
-        all_findings = universal + backend + frontend
+        static = state.get("static_findings", [])
+        impact = state.get("impact_findings", [])
+        all_findings = universal + backend + frontend + static + impact
 
         # Count findings by severity
         counts: dict = {
@@ -119,9 +182,16 @@ class CodeReviewGraph:
 Generate a summary of this code review.
 
 PR has {total_changes} changed files with {total_findings} total findings:
-- Critical: {critical_count}
-- Major: {major_count}
-- Minor: {minor_count}
+|- Critical: {critical_count}
+|- Major: {major_count}
+|- Minor: {minor_count}
+
+Breakdown:
+|- LLM (Universal): {llm_count}
+|- LLM (Backend): {backend_count}
+|- LLM (Frontend): {frontend_count}
+|- Static Analysis: {static_count}
+|- Impact Analysis: {impact_count}
 
 List of findings:
 {findings_list}
@@ -138,12 +208,12 @@ Focus on what changed, the impact, and why it matters. Keep it concise.
 Format as:
 SUMMARY: <overall summary>
 KEY_CONCERNS:
-- <concern 1>
-- <concern 2>
+|- <concern 1>
+|- <concern 2>
 ...
         """)
 
-        findings_bullets = [f"- [{f.severity}] {f.title}: {f.description}" for f in all_findings]
+        findings_bullets = [f"- [{f.severity}] {f.category}: {f.title}" for f in all_findings]
         files_list = [f"- {c.file_path}" for c in changes]
 
         logger.debug("[Summary] Invoking LLM to generate summary...")
@@ -154,6 +224,11 @@ KEY_CONCERNS:
             critical_count=counts[Severity.CRITICAL],
             major_count=counts[Severity.MAJOR],
             minor_count=counts[Severity.MINOR],
+            llm_count=len(universal),
+            backend_count=len(backend),
+            frontend_count=len(frontend),
+            static_count=len(static),
+            impact_count=len(impact),
             findings_list="\n".join(findings_bullets) if findings_bullets else "No findings",
             files_list="\n".join(files_list),
         ))
@@ -204,7 +279,8 @@ KEY_CONCERNS:
             "universal_findings": [],
             "backend_findings": [],
             "frontend_findings": [],
-            "findings": [],
+            "static_findings": [],
+            "impact_findings": [],
             "summary": None,
             "completed": False
         }
@@ -216,7 +292,9 @@ KEY_CONCERNS:
         all_findings = (
             result.get("universal_findings", []) +
             result.get("backend_findings", []) +
-            result.get("frontend_findings", [])
+            result.get("frontend_findings", []) +
+            result.get("static_findings", []) +
+            result.get("impact_findings", [])
         )
 
         return CodeReviewResult(

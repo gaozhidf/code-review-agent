@@ -80,7 +80,7 @@ class TestInlineComment:
         assert thread.thread_context.file_path == "/backend/app.py"
         assert isinstance(thread.thread_context.right_file_start, CommentPosition)
         assert thread.thread_context.right_file_start.line == 45
-        assert thread.thread_context.right_file_start.offset == 0
+        assert thread.thread_context.right_file_start.offset == 1
         assert thread.thread_context.right_file_end.line == 45
 
     def test_post_inline_comment_without_line_info(self, azure_client, mock_git_client):

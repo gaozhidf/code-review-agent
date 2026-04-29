@@ -24,6 +24,17 @@ Automate code quality inspection for backend and frontend pull requests, with co
 - Performance issues (large bundle size, unnecessary renders)
 - Client-side security risks (XSS vulnerabilities, unsafe DOM usage)
 
+### Static Analysis Integration
+- **Python**: ruff (linting), bandit (security)
+- **JavaScript/TypeScript**: eslint
+- Auto-detection of available tools
+- Deterministic detection of known patterns
+
+### Impact Analysis
+- AST-based call chain analysis (for Python)
+- Pattern-based breaking change detection
+- Detects deleted functions/classes, API contract changes
+
 ### Azure DevOps Workflow Integration
 - Inline PR comments with severity classification (`critical > major > minor`)
 - PR-level risk summary explaining what changed and why it matters
